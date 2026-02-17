@@ -11,6 +11,7 @@ const firebaseConfig = {
   storageBucket: "strongs-brazil.firebasestorage.app",
   messagingSenderId: "1024925581751",
   appId: "1:1024925581751:web:b02d40cb7ad4aec40da832",
+  measurementId: "G-TN3GJVR4FF"
 };
 
 const app = initializeApp(firebaseConfig);
