@@ -1,14 +1,14 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { Layout } from './components/Layout';
 import { Rankings } from './components/Rankings';
 import { AdminPanel } from './components/AdminPanel';
 import { Button } from './components/Button';
 import { AppData, UserRole, ConfTier, JoinApplication } from './types';
 import { loadData } from './services/storage'; // We keep this just for DEFAULT_DATA structure
-import { Trophy, ChevronRight, Lock, Users, Shield, UserPlus, Send, Briefcase, Coins, Percent, Smartphone, Star, Loader2 } from 'lucide-react';
+import { Trophy, ChevronRight, Lock, Users, Shield, UserPlus, Send, Briefcase, Coins, Percent, Smartphone, Star, Loader2, AlertTriangle } from 'lucide-react';
 
 // Firebase Imports
-import { db } from './services/firebase';
+import { db, isConfigured } from './services/firebase';
 import { ref, onValue, set } from "firebase/database";
 
 const App: React.FC = () => {
@@ -21,6 +21,15 @@ const App: React.FC = () => {
   // Auth State (Local session only)
   const [currentUser, setCurrentUser] = useState<AppData['currentUser']>(null);
   
+  // Use a ref to track currentUser inside the Firebase callback closure
+  // This prevents the user from being logged out when the database updates
+  const currentUserRef = useRef(currentUser);
+
+  // Sync ref with state
+  useEffect(() => {
+    currentUserRef.current = currentUser;
+  }, [currentUser]);
+
   // Login Form State
   const [loginUser, setLoginUser] = useState('');
   const [loginPass, setLoginPass] = useState('');
@@ -31,21 +40,49 @@ const App: React.FC = () => {
 
   // 1. Connect to Firebase on Mount
   useEffect(() => {
+    // If not configured, we don't try to connect to avoid errors
+    if (!isConfigured || !db) {
+      setLoading(false);
+      return;
+    }
+
     const dataRef = ref(db, 'strongs_db');
     
     // Listen for changes in the database
     const unsubscribe = onValue(dataRef, (snapshot) => {
       const val = snapshot.val();
+      const sessionUser = currentUserRef.current;
+
       if (val) {
-        // If data exists in Firebase, load it
-        // We inject the local currentUser session back into the data structure for the UI to work
-        setData({ ...val, currentUser: currentUser });
+        // CRITICAL FIX: Firebase strips empty arrays/keys. We must default them to [] 
+        // to prevent "Cannot read properties of undefined (reading 'filter')" crashes.
+        const safeData: AppData = {
+            ...val,
+            users: val.users || [],
+            confederations: val.confederations || [],
+            members: val.members || [],
+            news: val.news || [],
+            top100History: val.top100History || [],
+            joinApplications: val.joinApplications || [],
+            currentUser: sessionUser // Inject local session
+        };
+
+        // If the user's data was updated in the DB (e.g. role change), update the session object
+        if (sessionUser) {
+            const freshUser = safeData.users.find(u => u.id === sessionUser.id);
+            if (freshUser) safeData.currentUser = freshUser;
+        }
+
+        setData(safeData);
       } else {
         // If Firebase is empty (first run), load default data and upload it
         const defaultData = loadData();
         set(dataRef, defaultData); // Upload default structure
         setData(defaultData);
       }
+      setLoading(false);
+    }, (error) => {
+      console.error("Firebase read error:", error);
       setLoading(false);
     });
 
@@ -78,11 +115,13 @@ const App: React.FC = () => {
     // We strip 'currentUser' before saving to DB, because who is logged in is local info
     const { currentUser: _, ...dbPayload } = updatedData;
     
-    // Save to Firebase
-    set(ref(db, 'strongs_db'), dbPayload).catch(err => {
-      console.error("Erro ao salvar no Firebase:", err);
-      alert("Erro de conexão. Suas alterações podem não ter sido salvas.");
-    });
+    // Save to Firebase ONLY if configured
+    if (isConfigured && db) {
+      set(ref(db, 'strongs_db'), dbPayload).catch(err => {
+        console.error("Erro ao salvar no Firebase:", err);
+        alert("Erro de conexão. Suas alterações podem não ter sido salvas.");
+      });
+    }
   };
 
   const handleLogin = () => {
@@ -162,6 +201,7 @@ const App: React.FC = () => {
                </div>
              </div>
           ))}
+          {data?.news.length === 0 && <div className="col-span-3 text-center text-gray-500 py-10">Nenhuma notícia publicada ainda.</div>}
         </div>
       </div>
     </div>
@@ -554,6 +594,33 @@ const App: React.FC = () => {
       </div>
     </div>
   );
+
+  // Check configuration before anything else
+  if (!isConfigured) {
+    return (
+        <div className="min-h-screen bg-strongs-darker flex items-center justify-center p-4">
+            <div className="bg-gray-900 border border-red-500 rounded-xl p-8 max-w-2xl text-center shadow-2xl">
+                <AlertTriangle className="w-16 h-16 text-red-500 mx-auto mb-4" />
+                <h1 className="text-3xl text-white font-bold mb-4 font-display uppercase tracking-widest">Configuração Necessária</h1>
+                <p className="text-gray-300 mb-6 text-lg">
+                    O site está pronto, mas precisa ser conectado ao seu banco de dados Firebase.
+                </p>
+                <div className="bg-black/50 p-4 rounded text-left text-sm font-mono text-gray-400 mb-6 overflow-x-auto border border-gray-700">
+                    <p className="mb-2 text-strongs-gold font-bold">// Abra o arquivo: services/firebase.ts</p>
+                    <p>const firebaseConfig = {'{'}</p>
+                    <p className="pl-4">apiKey: <span className="text-green-400">"COLE_SUA_API_KEY_AQUI"</span>,</p>
+                    <p className="pl-4">authDomain: "SEU_PROJETO.firebaseapp.com",</p>
+                    <p className="pl-4">databaseURL: "https://seu-projeto...firebaseio.com",</p>
+                    <p className="pl-4">...</p>
+                    <p>{'};'}</p>
+                </div>
+                <p className="text-white font-bold bg-red-900/30 p-4 rounded border border-red-500/30">
+                    Edite o arquivo <code>services/firebase.ts</code> com as chaves do seu projeto Firebase e recarregue a página.
+                </p>
+            </div>
+        </div>
+    );
+  }
 
   // Loading Screen
   if (loading || !data) {
